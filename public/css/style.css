@@ -38,6 +38,11 @@ body {
     min-height: 100vh;
 }
 
+h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-family-sans-serif);
+    font-weight: 600;
+}
+
 main {
     flex-grow: 1;
     padding-bottom: 2rem; /* Space for content above footer */
@@ -353,7 +358,7 @@ textarea {
 }
 
 .task-item.sub-task::before {
-    background-color: var(--info-color);
+    background-color: var(--primary-color);
 }
 
 .task-item.parent-context-only { /* For parent tasks shown only as context for sub-tasks */
@@ -387,13 +392,16 @@ textarea {
 }
 
 .task-title {
-    font-size: 1.2rem;
+    margin: 0;
+    font-size: 20px;
+    color: #333;
     font-weight: 600;
-    margin: 0 0 0.5rem 0;
-    color: var(--dark-color);
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
+    line-height: 1.4;
+}
+
+.task-item.sub-task .task-title {
+    font-size: 16px;
+    font-weight: 500;
 }
 
 .sub-task-indicator {
@@ -488,7 +496,7 @@ textarea {
     font-size: 1.2em;
     margin-top: 0;
     margin-bottom: 0.5rem;
-    border-bottom: none; /* remove default h rule */
+    border-bottom: none;
     padding-bottom: 0;
 }
 
@@ -664,4 +672,53 @@ footer p {
 /* Transition for smooth shadow effect */
 .form-auth input {
     transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+}
+
+.task-item .task-description {
+    margin: 0.5rem 0;
+    color: var(--text-color);
+}
+
+.task-deadline {
+    margin: 0.5rem 0;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    display: inline-block;
+    font-size: 0.9rem;
+    font-weight: 500;
+}
+
+.task-warning {
+    margin: 0.5rem 0;
+    padding: 0.5rem 0.75rem;
+    background-color: #fff3cd;
+    color: #856404;
+    border: 1px solid #ffeeba;
+    border-radius: 4px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    display: inline-block;
+    width: 100%;
+}
+
+.task-warning::before {
+    margin-right: 0.5rem;
+}
+
+.task-deadline.overdue {
+    background-color: #ffe5e5;
+    color: #dc3545;
+    border: 1px solid #ffcccc;
+}
+
+.task-deadline.upcoming {
+    background-color: #fff3cd;
+    color: #856404;
+    border: 1px solid #ffeeba;
+}
+
+.task-deadline.completed {
+    background-color: #d4edda;
+    color: #155724;
+    border: 1px solid #c3e6cb;
 }

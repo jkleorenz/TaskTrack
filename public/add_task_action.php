@@ -12,6 +12,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     $title = trim($_POST['title']);
     $description = isset($_POST['description']) ? trim($_POST['description']) : null;
     $user_id = $_SESSION['user_id'];
+    $deadline = isset($_POST['deadline']) && !empty($_POST['deadline']) ? $_POST['deadline'] : null;
 
     $parent_task_id_from_existing_flow = isset($_POST['parent_task_id']) && !empty($_POST['parent_task_id']) ? (int)$_POST['parent_task_id'] : null;
 
@@ -38,8 +39,8 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
 
         try {
             // Insert main task OR sub-task (for existing parent)
-            $stmt_main = $conn->prepare("INSERT INTO tasks (user_id, title, description, parent_task_id) VALUES (?, ?, ?, ?)");
-            $stmt_main->bind_param("issi", $user_id, $title, $description, $parent_task_id_from_existing_flow);
+            $stmt_main = $conn->prepare("INSERT INTO tasks (user_id, title, description, parent_task_id, deadline) VALUES (?, ?, ?, ?, ?)");
+            $stmt_main->bind_param("issss", $user_id, $title, $description, $parent_task_id_from_existing_flow, $deadline);
 
             if ($stmt_main->execute()) {
                 $newly_created_task_id = $conn->insert_id; 

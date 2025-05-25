@@ -10,6 +10,8 @@ function structure_tasks($tasks_flat_list) {
     $main_tasks = [];
     $sub_tasks_map = []; 
     $tasks_by_id = [];
+    
+    // First pass: organize tasks into maps
     foreach ($tasks_flat_list as $task) {
         $tasks_by_id[$task['id']] = $task;
         if (!empty($task['parent_task_id'])) {
@@ -19,11 +21,26 @@ function structure_tasks($tasks_flat_list) {
             $sub_tasks_map[$task['parent_task_id']][] = $task;
         }
     }
+    
+    // Second pass: collect main tasks while maintaining order
     foreach ($tasks_flat_list as $task) {
         if (empty($task['parent_task_id'])) {
             $main_tasks[] = $task;
         }
     }
+    
+    // Sort sub-tasks by deadline within each parent
+    foreach ($sub_tasks_map as $parent_id => &$subtasks) {
+        usort($subtasks, function($a, $b) {
+            // Handle null deadlines (put them at the end)
+            if (empty($a['deadline']) && empty($b['deadline'])) return 0;
+            if (empty($a['deadline'])) return 1;
+            if (empty($b['deadline'])) return -1;
+            
+            return strtotime($a['deadline']) - strtotime($b['deadline']);
+        });
+    }
+    
     return [$main_tasks, $sub_tasks_map];
 }
 
@@ -37,19 +54,19 @@ if (isset($_GET['view']) && $_GET['view'] === 'addTask' && isset($_GET['parent_i
     $stmt_parent_check->close();
 }
 $pending_tasks_flat = [];
-$stmt_pending = $conn->prepare("SELECT id, title, description, parent_task_id, is_completed FROM tasks WHERE user_id = ? AND is_completed = 0");
+$stmt_pending = $conn->prepare("SELECT id, title, description, parent_task_id, is_completed, deadline FROM tasks WHERE user_id = ? AND is_completed = 0 ORDER BY CASE WHEN deadline IS NULL THEN 1 ELSE 0 END, deadline ASC");
 $stmt_pending->bind_param("i", $user_id); $stmt_pending->execute(); $result_pending = $stmt_pending->get_result();
 while ($row = $result_pending->fetch_assoc()) { $pending_tasks_flat[] = $row; }
 $stmt_pending->close(); list($pending_main_tasks, $pending_sub_tasks_map) = structure_tasks($pending_tasks_flat);
 
 $all_tasks_flat = [];
-$stmt_all_manage = $conn->prepare("SELECT id, title, description, is_completed, parent_task_id FROM tasks WHERE user_id = ?"); 
+$stmt_all_manage = $conn->prepare("SELECT id, title, description, is_completed, parent_task_id, deadline FROM tasks WHERE user_id = ? ORDER BY CASE WHEN deadline IS NULL THEN 1 ELSE 0 END, deadline ASC"); 
 $stmt_all_manage->bind_param("i", $user_id); $stmt_all_manage->execute(); $result_all_manage = $stmt_all_manage->get_result();
 while ($row = $result_all_manage->fetch_assoc()) { $all_tasks_flat[] = $row; }
 $stmt_all_manage->close(); list($all_main_tasks_for_management, $all_sub_tasks_map_for_management) = structure_tasks($all_tasks_flat);
 
 $completed_tasks_flat = [];
-$stmt_completed_view = $conn->prepare("SELECT id, title, description, parent_task_id, is_completed FROM tasks WHERE user_id = ? AND is_completed = 1");
+$stmt_completed_view = $conn->prepare("SELECT id, title, description, parent_task_id, is_completed, deadline FROM tasks WHERE user_id = ? AND is_completed = 1 ORDER BY CASE WHEN deadline IS NULL THEN 1 ELSE 0 END, deadline ASC");
 $stmt_completed_view->bind_param("i", $user_id); $stmt_completed_view->execute(); $result_completed_view = $stmt_completed_view->get_result();
 while ($row = $result_completed_view->fetch_assoc()) { $completed_tasks_flat[] = $row; }
 $stmt_completed_view->close(); list($completed_main_tasks_to_view, $completed_sub_tasks_map_to_view) = structure_tasks($completed_tasks_flat);
@@ -65,13 +82,78 @@ function render_task_item($task, $view_context, $is_sub_task = false, $extra_but
     echo '<div class="task-info">';
     echo '<h4 class="task-title">' . htmlspecialchars($task['title']) . '</h4>';
     if (!empty($task['description'])) { echo '<p class="task-description">' . nl2br(htmlspecialchars($task['description'])) . '</p>'; }
+    
+    // Handle deadline and warning display for main tasks
+    if (!$is_sub_task && !empty($task['deadline'])) {
+        $deadline_date = new DateTime($task['deadline']);
+        $today = new DateTime();
+        $deadline_class = '';
+        $days_until_deadline = $deadline_date->diff($today)->days;
+        $deadline_passed = $deadline_date < $today;
+        
+        if ($task['is_completed']) {
+            $deadline_class = 'completed';
+        } elseif ($deadline_passed) {
+            $deadline_class = 'overdue';
+        } elseif ($days_until_deadline <= 3) {
+            $deadline_class = 'upcoming';
+        }
+        
+        echo '<p class="task-deadline ' . $deadline_class . '">Deadline: ' . htmlspecialchars($task['deadline']) . '</p>';
+        
+        // Check for incomplete subtasks
+        global $sub_tasks_map;
+        if (!$task['is_completed'] && isset($sub_tasks_map[$task['id']])) {
+            $incomplete_subtasks = 0;
+            foreach ($sub_tasks_map[$task['id']] as $subtask) {
+                if (!$subtask['is_completed']) {
+                    $incomplete_subtasks++;
+                }
+            }
+            
+            if ($incomplete_subtasks > 0 && ($days_until_deadline <= 3 || $deadline_passed)) {
+                $warning_message = '';
+                if ($deadline_passed) {
+                    $warning_message = "⚠️ Deadline passed with {$incomplete_subtasks} incomplete sub-task" . 
+                                     ($incomplete_subtasks > 1 ? 's' : '') . "!";
+                } elseif ($days_until_deadline == 0) {
+                    $warning_message = "⚠️ Deadline is today with {$incomplete_subtasks} incomplete sub-task" . 
+                                     ($incomplete_subtasks > 1 ? 's' : '') . "!";
+                } elseif ($days_until_deadline == 1) {
+                    $warning_message = "⚠️ Deadline tomorrow with {$incomplete_subtasks} incomplete sub-task" . 
+                                     ($incomplete_subtasks > 1 ? 's' : '') . "!";
+                } else {
+                    $warning_message = "⚠️ Deadline in {$days_until_deadline} days with {$incomplete_subtasks} incomplete sub-task" . 
+                                     ($incomplete_subtasks > 1 ? 's' : '') . "!";
+                }
+                echo '<p class="task-warning">' . $warning_message . '</p>';
+            }
+        }
+    }
+    
     echo '</div>';
     echo '<div class="task-actions">';
-    if ($view_context === 'markComplete') { echo '<a href="toggle_complete_action.php?id=' . $task['id'] . '&view=' . $view_context . '&csrf_token=' . urlencode(generateCSRFToken()) . '" class="btn btn-success">Mark Complete</a>'; } 
-    elseif ($view_context === 'editDelete') { $toggle_text = $task['is_completed'] ? 'Undo' : 'Done'; $toggle_class = $task['is_completed'] ? 'btn-secondary' : 'btn-success'; echo '<a href="toggle_complete_action.php?id=' . $task['id'] . '&view=' . $view_context . '&csrf_token=' . urlencode(generateCSRFToken()) . '" class="btn ' . $toggle_class . '">' . $toggle_text . '</a>'; } 
-    elseif ($view_context === 'viewCompleted') { echo '<a href="toggle_complete_action.php?id=' . $task['id'] . '&view=' . $view_context . '&csrf_token=' . urlencode(generateCSRFToken()) . '" class="btn btn-secondary">Mark Incomplete</a>'; }
-    if ($view_context === 'editDelete' || $view_context === 'viewCompleted') { $confirm_message = 'Are you sure you want to delete this task?'; if (!$is_sub_task) $confirm_message .= ' This may also delete its sub-tasks.'; echo '<a href="delete_task_action.php?id=' . $task['id'] . '&view=' . $view_context . '&csrf_token=' . urlencode(generateCSRFToken()) . '" onclick="return confirm(\'' . addslashes($confirm_message) . '\');" class="btn btn-danger btn-delete-confirm">Delete</a>'; }
-    if (is_callable($extra_buttons_callback) && !$is_sub_task) { call_user_func($extra_buttons_callback, $task); }
+    if ($view_context === 'markComplete') { 
+        echo '<a href="toggle_complete_action.php?id=' . $task['id'] . '&view=' . $view_context . '&csrf_token=' . urlencode(generateCSRFToken()) . '" class="btn btn-success">Mark Complete</a>'; 
+    } 
+    elseif ($view_context === 'editDelete') { 
+        $confirm_message = 'Are you sure you want to delete this task?';
+        if (!$is_sub_task) $confirm_message .= ' This may also delete its sub-tasks.';
+        echo '<button type="button" onclick="openEditModal(' . $task['id'] . ', \'' . addslashes(htmlspecialchars($task['title'])) . '\', \'' . addslashes(htmlspecialchars($task['description'])) . '\', \'' . (!empty($task['deadline']) ? $task['deadline'] : '') . '\', ' . ($is_sub_task ? 'true' : 'false') . ')" class="btn btn-primary">Edit</button>';
+        
+        // Add Undo button for completed subtasks
+        if ($is_sub_task && $task['is_completed']) {
+            echo '<a href="toggle_complete_action.php?id=' . $task['id'] . '&view=' . $view_context . '&csrf_token=' . urlencode(generateCSRFToken()) . '" class="btn btn-secondary">Undo</a>';
+        }
+        
+        echo '<a href="delete_task_action.php?id=' . $task['id'] . '&view=' . $view_context . '&csrf_token=' . urlencode(generateCSRFToken()) . '" onclick="return confirm(\'' . addslashes($confirm_message) . '\');" class="btn btn-danger btn-delete-confirm">Delete</a>'; 
+    } 
+    elseif ($view_context === 'viewCompleted') { 
+        echo '<a href="toggle_complete_action.php?id=' . $task['id'] . '&view=' . $view_context . '&csrf_token=' . urlencode(generateCSRFToken()) . '" class="btn btn-secondary">Mark Incomplete</a>'; 
+    }
+    if (is_callable($extra_buttons_callback) && !$is_sub_task) { 
+        call_user_func($extra_buttons_callback, $task); 
+    }
     echo '</div></li>';
 }
 // --- Helper function to render a list of tasks and their sub-tasks (remains the same) ---
@@ -162,6 +244,21 @@ function render_task_list($main_tasks_data, $sub_tasks_map_data, $view_context, 
     font-size: 0.9rem; /* Slightly smaller font */
 }
 
+/* Style for the Undo button */
+#editDeleteSection .task-item.sub-task.completed .btn-secondary {
+    background-color: #6c757d;
+    border-color: #6c757d;
+    color: white;
+    opacity: 0.9;
+    transition: all 0.2s ease-in-out;
+}
+
+#editDeleteSection .task-item.sub-task.completed .btn-secondary:hover {
+    opacity: 1;
+    background-color: #5a6268;
+    border-color: #545b62;
+}
+
 /* Make the "Add Sub-task" button consistent with others */
 #editDeleteSection .btn-info {
     min-width: 80px;
@@ -188,6 +285,134 @@ function render_task_list($main_tasks_data, $sub_tasks_map_data, $view_context, 
 .task-item.sub-task {
     box-shadow: 0 2px 4px rgba(0,0,0,0.05);
 }
+
+/* Modal Styles */
+.modal {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0,0,0,0.5);
+    z-index: 1000;
+}
+
+.modal-content {
+    position: relative;
+    background-color: #fff;
+    margin: 5% auto;
+    padding: 20px;
+    width: 90%;
+    max-width: 500px;
+    border-radius: 8px;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+}
+
+.close-modal {
+    position: absolute;
+    right: 20px;
+    top: 15px;
+    font-size: 24px;
+    font-weight: bold;
+    cursor: pointer;
+    color: #666;
+}
+
+.close-modal:hover {
+    color: #333;
+}
+
+.form-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+    margin-top: 20px;
+}
+
+.modal .form-group {
+    margin-bottom: 15px;
+}
+
+.modal input[type="text"],
+.modal input[type="date"],
+.modal textarea {
+    width: 100%;
+    padding: 8px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 14px;
+}
+
+.modal textarea {
+    min-height: 100px;
+    resize: vertical;
+}
+
+/* Progress Bar Styles */
+.progress-container {
+    background: white;
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    margin-bottom: 2rem;
+}
+
+.progress-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+}
+
+.progress-text {
+    font-size: 1.1em;
+    font-weight: 500;
+    color: var(--dark-color);
+}
+
+.progress-percentage {
+    font-size: 1.2em;
+    font-weight: 600;
+    color: var(--primary-color);
+}
+
+.progress-bar-container {
+    width: 100%;
+    height: 10px;
+    background-color: #e9ecef;
+    border-radius: 5px;
+    overflow: hidden;
+    margin-bottom: 10px;
+}
+
+.progress-bar {
+    height: 100%;
+    background-color: var(--primary-color);
+    border-radius: 5px;
+    transition: width 0.6s ease;
+}
+
+.progress-stats {
+    text-align: right;
+    font-size: 0.9em;
+    color: var(--secondary-color);
+}
+
+/* Responsive adjustments for progress bar */
+@media (max-width: 768px) {
+    .progress-container {
+        padding: 15px;
+    }
+    
+    .progress-text, .progress-percentage {
+        font-size: 1em;
+    }
+    
+    .progress-stats {
+        font-size: 0.85em;
+    }
+}
 </style>
 
 <div class="container dashboard">
@@ -196,7 +421,28 @@ function render_task_list($main_tasks_data, $sub_tasks_map_data, $view_context, 
     <?php if (!empty($success_message)): ?><div class="alert alert-success"><p><?php echo htmlspecialchars($success_message); ?></p></div><?php endif; ?>
     <?php if (!empty($error_message)): ?><div class="alert alert-danger"><p><?php echo htmlspecialchars($error_message); ?></p></div><?php endif; ?>
 
-    <p style="margin-bottom: 1.5rem; font-size: 1.1em; color: var(--secondary-color);">What would you like to do?</p>
+    <!-- Progress Bar -->
+    <?php
+    // Calculate progress
+    $total_tasks = count($all_tasks_flat);
+    $completed_tasks = count($completed_tasks_flat);
+    $progress_percentage = $total_tasks > 0 ? round(($completed_tasks / $total_tasks) * 100) : 0;
+    ?>
+    <div class="progress-container">
+        <div class="progress-info">
+            <span class="progress-text">Overall Progress</span>
+            <span class="progress-percentage"><?php echo $progress_percentage; ?>%</span>
+        </div>
+        <div class="progress-bar-container">
+            <div class="progress-bar" style="width: <?php echo $progress_percentage; ?>%"></div>
+        </div>
+        <div class="progress-stats">
+            <span><?php echo $completed_tasks; ?> of <?php echo $total_tasks; ?> tasks completed</span>
+        </div>
+    </div>
+
+    <p style="margin-bottom: 1.5rem; margin-top: 1rem; font-size: 1.1em; color: var(--secondary-color);">What would you like to do?</p>
+
     <div class="dashboard-options-container">
         <div class="dashboard-option-box" data-view="addTask"><h4>1. Add Task</h4><p class="option-description">Create a new task or sub-task.</p></div>
         <div class="dashboard-option-box" data-view="markComplete"><h4>2. Mark Complete</h4><p class="option-description">View pending tasks and mark them as done.</p></div>
@@ -226,7 +472,12 @@ function render_task_list($main_tasks_data, $sub_tasks_map_data, $view_context, 
                 <input type="text" id="title" name="title" required>
             </div>
 
-            <?php if (!$parent_task_for_add_form): // Only show "Add sub-task now?" option when creating a NEW MAIN task ?>
+            <?php if (!$parent_task_for_add_form): // Only show deadline and sub-task options for main tasks ?>
+            <div class="form-group">
+                <label for="deadline">Deadline (Optional):</label>
+                <input type="date" id="deadline" name="deadline">
+            </div>
+
             <div class="form-group" style="margin-top: 1rem; margin-bottom: 1rem; padding:0.75rem 0; border-top: 1px solid #eee; border-bottom: 1px solid #eee;">
                 <label for="add_sub_task_now_checkbox" class="checkbox-label">
                     <input type="checkbox" id="add_sub_task_now_checkbox" name="add_sub_task_now" value="1" style="width:auto; margin-right: 8px; transform: scale(1.2);">
@@ -288,6 +539,38 @@ function render_task_list($main_tasks_data, $sub_tasks_map_data, $view_context, 
         <h3>4. View Completed Tasks</h3>
         <?php render_task_list($completed_main_tasks_to_view, $completed_sub_tasks_map_to_view, 'viewCompleted', 'No tasks have been completed yet.'); ?>
     </section>
+</div>
+
+<!-- Edit Task Modal -->
+<div class="modal" id="editTaskModal" style="display: none;">
+    <div class="modal-content">
+        <span class="close-modal" onclick="closeEditModal()">&times;</span>
+        <h3 id="editModalTitle">Edit Task</h3>
+        <form action="edit_task_action.php" method="POST" class="task-form">
+            <?php echo getCSRFTokenField(); ?>
+            <input type="hidden" name="task_id" id="edit_task_id">
+            
+            <div class="form-group">
+                <label for="edit_title">Title:</label>
+                <input type="text" id="edit_title" name="title" required>
+            </div>
+
+            <div class="form-group" id="deadline_group">
+                <label for="edit_deadline">Deadline (Optional):</label>
+                <input type="date" id="edit_deadline" name="deadline">
+            </div>
+
+            <div class="form-group">
+                <label for="edit_description">Description (Optional):</label>
+                <textarea id="edit_description" name="description"></textarea>
+            </div>
+            
+            <div class="form-actions">
+                <button type="submit" class="btn btn-success">Save Changes</button>
+                <button type="button" class="btn btn-secondary" onclick="closeEditModal()">Cancel</button>
+            </div>
+        </form>
+    </div>
 </div>
 
 <script>
@@ -421,6 +704,42 @@ document.addEventListener('DOMContentLoaded', function() {
     if (currentViewOnLoad && document.getElementById(currentViewOnLoad + 'Section')) { showView(currentViewOnLoad, preserveQueryOnLoad); } 
     else { showView(defaultView); }
 });
+
+function openEditModal(taskId, title, description, deadline, isSubTask) {
+    document.getElementById('edit_task_id').value = taskId;
+    document.getElementById('edit_title').value = title;
+    document.getElementById('edit_description').value = description || '';
+    
+    // Show/hide deadline field based on whether it's a sub-task
+    const deadlineGroup = document.getElementById('deadline_group');
+    if (isSubTask) {
+        deadlineGroup.style.display = 'none';
+        document.getElementById('edit_deadline').value = '';
+        document.getElementById('editModalTitle').textContent = 'Edit Sub-task';
+    } else {
+        deadlineGroup.style.display = 'block';
+        document.getElementById('edit_deadline').value = deadline || '';
+        document.getElementById('editModalTitle').textContent = 'Edit Task';
+    }
+    
+    document.getElementById('editTaskModal').style.display = 'block';
+}
+
+function closeEditModal() {
+    document.getElementById('editTaskModal').style.display = 'none';
+    // Reset form
+    document.getElementById('edit_title').value = '';
+    document.getElementById('edit_description').value = '';
+    document.getElementById('edit_deadline').value = '';
+}
+
+// Close modal when clicking outside
+window.onclick = function(event) {
+    const modal = document.getElementById('editTaskModal');
+    if (event.target === modal) {
+        closeEditModal();
+    }
+}
 </script>
 
 <?php include '../templates/footer.php'; ?>
